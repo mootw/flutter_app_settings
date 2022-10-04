@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -16,29 +17,89 @@ class SettingState<T> {
       o.disabledReason == disabledReason;
 }
 
+/// Stores the raw json data persitantly.
+/// Individual settings can interact with this.
+/// Uses shared preferences to store the data.
+/// Throughput doesn't matter much here, so
+/// The implementation is fairly simple.
+/// Whenver a setting is retrieved, use the cache
+/// Whenever a key is set, set the cache value
+/// and flush it to disk.
+/// Each setting is encoded separately
+class SettingDataStore {
+  String id;
+  SettingDataStore(this.id);
+
+  Map<String, dynamic>? settings;
+  Timer? _flushTimer;
+
+  Future loadFromDisk() async {
+    final prefs = await SharedPreferences.getInstance();
+    final data = prefs.getString(id);
+    if (data != null) {
+      settings = jsonDecode(data);
+      return;
+    }
+    //TODO
+    //Load default values.
+    settings = {};
+  }
+
+  Future<Map<String, dynamic>> getSettings() async {
+    if (settings == null) {
+      await loadFromDisk();
+    }
+    return settings!;
+  }
+
+  Future<dynamic> getValue(String key) async {
+    return (await getSettings())[key];
+  }
+
+  Future<void> setValue(String key, dynamic value) async {
+    (await getSettings())[key] = value;
+    //Schedule disk flush for 100ms from now.
+    _flushTimer?.cancel();
+    _flushTimer = Timer(Duration(milliseconds: 100), () async {
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      prefs.setString(id, jsonEncode(settings));
+      print(jsonEncode(settings));
+    });
+  }
+}
+
 /// Is a definition of a proprty that can be mutated in storage.
-/// Allows for storage of raw string data.
-/// This only contains information required for data manipulation
+/// This helps define the shape of the setting to the app.
 /// Any UI specific data is not defined here
-class Setting {
+class Setting<T> {
   Setting(
-      {required this.id,
+      {required this.dataStore,
+      required this.id,
       required this.defaultValue,
-      String? disabledValue,
-      this.checkDisabledFunction})
-      : _disabledValue = disabledValue;
+      T? this.disabledValue,
+      this.fromJson,
+      this.options,
+      this.checkDisabledFunction});
 
   StreamController<SettingState> _controller =
       StreamController<SettingState>.broadcast();
+
+  SettingDataStore dataStore;
 
   ///Identifier for this setting (must be unique)
   String id;
 
   ///Default value for this setting.
-  String defaultValue;
+  T defaultValue;
 
   ///Value that is returned if this setting is marked as disabled.
-  String? _disabledValue;
+  T? disabledValue;
+
+  /// defines possible values for this setting.
+  List<T>? options;
+
+  //Required if the Setting type isn't a JSON type.
+  Function? fromJson;
 
   /// This function if not null is called to check if the setting is disabled.
   /// This function should return null if this setting should stay enabled, or
@@ -46,16 +107,12 @@ class Setting {
   NullOrStringFunction? checkDisabledFunction;
 
   /// Value cached from the last time this setting was retrieved.
-  SettingState<String>? _cachedState;
-
-  String get _storeID {
-    return "s_$id";
-  }
+  SettingState<T>? _cachedState;
 
   /// Updates this setting
   Future update() async {
     var newState =
-        SettingState(await getString(), await isDisabled, await disabledReason);
+        SettingState(await get(), await isDisabled, await disabledReason);
     if (newState != _cachedState) {
       bool dirty = _cachedState?.value != null;
       _cachedState = newState;
@@ -73,22 +130,18 @@ class Setting {
   }
 
   //Returns the default value if none is set
-  SettingState<String> get getCacheString {
-    return _cachedState ?? SettingState<String>(defaultValue, false, null);
+  SettingState<T> get getCacheString {
+    return _cachedState ?? SettingState<T>(defaultValue, false, null);
   }
 
   SettingState get getCache {
     return getCacheString;
   }
 
-  dynamic get disabledValue {
-    return _disabledValue;
-  }
-
-  /// Sets a raw string value to the data layer
-  Future setString(String value) async {
-    SharedPreferences sharedPreferences = await SharedPreferences.getInstance();
-    sharedPreferences.setString(_storeID, value);
+  /// Sets a value of this setting
+  Future set(T value) async {
+    print("Setting value ${id} to ${value}");
+    dataStore.setValue(id, value);
     if (_cachedState?.value != value && _cachedState != null) {
       //This value has changed
       await update();
@@ -97,31 +150,38 @@ class Setting {
 
   /// Resets this setting to the default value
   Future resetToDefault() async {
-    await setString(defaultValue);
-  }
-
-  /// This is overridden by multisetting
-  Future<dynamic> toJsonAsync() async {
-    return await getString();
+    await set(defaultValue);
   }
 
   // Checks if the setting is disabled; if not it will return from data layer.
-  Future<String> getString() async {
+  Future<T> get() async {
     if (await isDisabled) {
       //Dependency is disabled, return disabled value
-      if (_disabledValue == null) {
+      if (disabledValue == null) {
         throw Exception("Disablable value cannot have a null disabled value");
       }
-      return _disabledValue!;
+      return disabledValue!;
     } else {
-      SharedPreferences sharedPreferences =
-          await SharedPreferences.getInstance();
-      String? val = sharedPreferences.getString(_storeID);
-      if (val != null) {
-        return val;
+      dynamic rawValue = await dataStore.getValue(id);
+      if (rawValue == null) {
+        resetToDefault();
+        return defaultValue;
       }
-      await resetToDefault();
-      return defaultValue;
+      if (rawValue is T) {
+        //Value doesn't exist in options, reset it
+        if (options?.contains(rawValue) == false) {
+          resetToDefault();
+          return defaultValue;
+        }
+        return rawValue;
+      }
+      try {
+        return fromJson!.call(rawValue);
+      } catch (e, s) {
+        print('$e $s');
+        resetToDefault();
+        return defaultValue;
+      }
     }
   }
 
@@ -141,134 +201,4 @@ class Setting {
     }
     return null;
   }
-}
-
-/// Wrapper for Setting that allows for a <Type> to be stored.
-/// It also handles data integrity.
-class MultiSetting<T> extends Setting {
-  MultiSetting(
-      {required String id,
-      required T defaultValue,
-      T? disabledValue,
-      NullOrStringFunction? checkDisabledFunction,
-      required this.valueToString})
-      :
-        //Generate a reverse map for valueToStringMap if valueToString is not null
-        stringToValue = valueToString.map((k, v) => MapEntry(v, k)),
-        super(
-            id: id,
-            checkDisabledFunction: checkDisabledFunction,
-            defaultValue: valueToString[defaultValue]!,
-            disabledValue: valueToString[disabledValue]) {}
-
-  ///Used to convert a value to a string and back. Required if is not a string.
-  Map<T, String> valueToString;
-
-  /// Generated reverse map to convert a string to a value.
-  Map<String, T> stringToValue;
-
-  /// returns the disabled value of this setting
-  T get disabledValue {
-    return stringToValue[_disabledValue]!;
-  }
-
-  // Override our update function to also call our get function that has checks
-  // for bad values
-  Future update() async {
-    await get();
-    await super.update();
-  }
-
-  /// Takes the state and returns a typed and converted one; returns the default value if null.
-  SettingState<T> get getCache {
-    return SettingState<T>(
-        stringToValue[_cachedState?.value] ?? stringToValue[defaultValue]!,
-        _cachedState?.isDisabled ?? false,
-        _cachedState?.disabledReason);
-  }
-
-  /// This is overridden by multisetting
-  Future<dynamic> toJsonAsync() async {
-    var x = await get();
-    if (x is bool || x is num || x is double || x is int) {
-      return x;
-    } else {
-      return await getString();
-    }
-  }
-
-  /// Gets the value of this setting (Including handling if it is disabled)
-  Future<T> get() async {
-    String valueString = await super.getString();
-    T? val = stringToValue[valueString];
-    if (val != null) {
-      return val;
-    }
-    //This is not a valid value; return the default value and set the default.
-    await resetToDefault();
-    return stringToValue[defaultValue]!; //Default value has to be valid.
-  }
-
-  /// Sets the value of this setting; if it is not a valid type or value then
-  /// it will throw an exception.
-  Future set(T value) async {
-    //Conversion is required.
-    String? v = valueToString[value];
-    if (v == null) {
-      throw Exception(
-          "Value ${value} ${value.runtimeType} is not a valid for setting id ${id}");
-    }
-    await super.setString(v);
-  }
-}
-
-/// Setting wrapper for bool value settings.
-class MultiSettingBool extends MultiSetting<bool> {
-  MultiSettingBool(
-      {required String id,
-      required bool defaultValue,
-      bool? disabledValue,
-      NullOrStringFunction? checkDisabledFunction})
-      : super(
-            id: id,
-            defaultValue: defaultValue,
-            disabledValue: disabledValue,
-            checkDisabledFunction: checkDisabledFunction,
-            valueToString: {true: "true", false: "false"});
-}
-
-/// Setting wrapper for String value settings.
-/// Automatically generates a 1 to 1 string map with the values options
-class MultiSettingString extends MultiSetting<String> {
-  MultiSettingString(
-      {required String id,
-      required String defaultValue,
-      required List<String> options,
-      String? disabledValue,
-      NullOrStringFunction? checkDisabledFunction})
-      : super(
-            id: id,
-            defaultValue: defaultValue,
-            disabledValue: disabledValue,
-            checkDisabledFunction: checkDisabledFunction,
-            valueToString:
-                Map.fromIterable(options, key: (e) => e, value: (e) => e));
-}
-
-/// Setting wrapper for int value settings.
-/// Automatically generates a 1 to 1 int map with the values options
-class MultiSettingInt extends MultiSetting<int> {
-  MultiSettingInt(
-      {required String id,
-      required int defaultValue,
-      required List<int> options,
-      int? disabledValue,
-      NullOrStringFunction? checkDisabledFunction})
-      : super(
-            id: id,
-            defaultValue: defaultValue,
-            disabledValue: disabledValue,
-            checkDisabledFunction: checkDisabledFunction,
-            valueToString: Map.fromIterable(options,
-                key: (e) => e, value: (e) => e.toString()));
 }

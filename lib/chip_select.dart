@@ -16,7 +16,6 @@ extension GlobalKeyEx on GlobalKey {
 }
 
 class ChipSelect<T> extends StatefulWidget {
-
   ChipSelect({this.selected, required this.chips, required this.callback});
 
   final T? selected;
@@ -71,7 +70,7 @@ class _ChipSelectState<T> extends State<ChipSelect> {
         target = max;
       }
       _scrollController.animateTo(target,
-          duration: const Duration(milliseconds: 400), curve: Curves.ease);
+          duration: const Duration(milliseconds: 250), curve: Curves.ease);
     }
   }
 
@@ -81,10 +80,9 @@ class _ChipSelectState<T> extends State<ChipSelect> {
     return Padding(
         padding: const EdgeInsets.only(left: 3, right: 3),
         child: ActionChip(
+          //TODO maybe switch to InputChip?
           key: key,
-          backgroundColor: isSelected
-              ? Theme.of(context).chipTheme.selectedColor
-              : Theme.of(context).chipTheme.backgroundColor,
+          backgroundColor: isSelected ? Theme.of(context).highlightColor : null,
           onPressed: () {
             widget.callback(chip.value);
             setState(() {
@@ -100,7 +98,8 @@ class _ChipSelectState<T> extends State<ChipSelect> {
 }
 
 class SelectableChip<T> {
-  const SelectableChip({required this.value, required this.contents, this.contentsSelected});
+  const SelectableChip(
+      {required this.value, required this.contents, this.contentsSelected});
 
   final T value;
   final Widget contents;

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:settings/settings.dart';
-import 'package:settings/chip_select.dart';
+import 'package:flutter_app_settings/settings.dart';
+import 'package:flutter_app_settings/chip_select.dart';
 
 class SettingToggle extends StatefulWidget {
   const SettingToggle(
@@ -10,7 +10,7 @@ class SettingToggle extends StatefulWidget {
 
   final String title;
   final String? subtitle;
-  final MultiSettingBool boolSetting;
+  final Setting boolSetting;
 
   @override
   _SettingToggleState createState() => _SettingToggleState();
@@ -87,7 +87,7 @@ class SettingDropdown<T> extends StatefulWidget {
   final String? subtitle;
 
   // Data connector
-  final MultiSetting mySetting;
+  final Setting mySetting;
 
   // Converts T to a widget that is displayed in the UI; usually Text.
   final Map<T, Widget> displayMap;
@@ -155,7 +155,7 @@ class SettingChipSelect<T> extends StatefulWidget {
   final String? title;
 
   // Data connector
-  final MultiSetting mySetting;
+  final Setting mySetting;
 
   // Converts T to a widget that is displayed in the UI; usually Text.
   final Map<T, Widget> displayMap;
@@ -205,23 +205,6 @@ class _SettingChipSelectState<T> extends State<SettingChipSelect> {
             .map((key) => SelectableChip<T>(
                 contents: widget.displayMap[key]!, value: key))
             .toList());
-  }
-}
-
-class SettingButtonWidget extends StatelessWidget {
-  SettingButtonWidget(this.label, this.callback);
-
-  final String label;
-  final VoidCallback callback;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      title: OutlinedButton(
-        onPressed: callback,
-        child: Text(label),
-      ),
-    );
   }
 }
 
